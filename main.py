@@ -11,13 +11,15 @@ from aiogram.types import (
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.client.default import DefaultBotProperties
 
-# === SECURE TOKEN LOADING ===
+# === SECURE TOKEN ===
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN not found! Set it in Environment Variables.")
+    raise ValueError("BOT_TOKEN not found! Set it in Render → Environment Variables.")
 
-bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
+# === BOT WITH HTML ENABLED (NEW 3.7+ WAY) ===
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode='HTML'))
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
@@ -102,7 +104,7 @@ async def compatibility_check(message: types.Message, state: FSMContext):
     await asyncio.sleep(2)
 
     success_msg = (
-        "Compatible\n\n"
+        "✅ <b>Compatible</b>\n\n"
         f"<b>Order ID:</b> <code>{order_id}</code>\n\n"
         "<b>Next Step:</b>\n"
         "Send this Order ID to <b>@vuling</b>\n"
@@ -112,9 +114,9 @@ async def compatibility_check(message: types.Message, state: FSMContext):
     await message.answer(success_msg)
     await state.set_state(PurchaseFlow.completed)
 
-# === START ===
+# === START BOT ===
 async def main():
-    print("CashApp V7 Bot is now running securely...")
+    print("CashApp V7 Bot is LIVE and secure!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
