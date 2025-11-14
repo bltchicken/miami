@@ -1,163 +1,117 @@
 import os
 import asyncio
 import random
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from dotenv import load_dotenv
 
-# Load .env (only for local dev – Render uses env vars directly)
+# Load env (local only)
 load_dotenv()
 
-# ── CONFIG ─────────────────────────────────────────────────────────────────────
+# CONFIG
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not BOT_TOKEN:
-    raise RuntimeError("Set TELEGRAM_BOT_TOKEN in Render environment variables")
+    raise RuntimeError("TELEGRAM_BOT_TOKEN not set in Render!")
 
-SECURITY_IMG_URL = "https://i.ibb.co/r2LkRhCY/Security.jpg"
-MATH_QUESTIONS = [
+SECURITY_IMG = "https://i.ibb.co/r2LkRhCY/Security.jpg"
+QUESTIONS = [
     ("3 + 5", "8"),
     ("7 - 2", "5"),
     ("4 × 6", "24"),
     ("9 ÷ 3", "3"),
-    ("2 + 10", "12"),
 ]
 
-# ── HELPERS ───────────────────────────────────────────────────────────────────
-def loading_bar(percent: int) -> str:
-    """Cool animated loading bar"""
-    bar_len = 12
-    filled = int(bar_len * percent // 100)
-    bar = "█" * filled + "░" * (bar_len - filled)
+# LOADING BAR
+def loading(percent: int) -> str:
+    bar = "█" * (percent // 10) + "░" * (10 - percent // 10)
     return f"`{bar} {percent}%`\n*Processing…*"
 
-async def send_loading(update: Update, context: ContextTypes.DEFAULT_TYPE, final_text: str):
-    """Show progressive loading then final message"""
-    msg = await update.message.reply_text(loading_bar(0), parse_mode="Markdown")
-    for p in range(10, 101, 15):
-        await asyncio.sleep(0.35)
-        await msg.edit_text(loading_bar(p), parse_mode="Markdown")
+async def show_loading(message, final_text: str):
+    msg = await message.reply_text(loading(0), parse_mode="Markdown")
+    for p in range(20, 101, 20):
+        await asyncio.sleep(0.4)
+        await msg.edit_text(loading(p), parse_mode="Markdown")
     await msg.edit_text(final_text, parse_mode="Markdown")
 
-# ── HANDLERS ───────────────────────────────────────────────────────────────────
+# /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Welcome + security image + math challenge"""
     user = update.effective_user
-    welcome = (
-        "🔐 **Security Check**\n"
-        f"Hello *{user.first_name}*! Before we start, prove you’re not a robot 🤖\n\n"
-    )
+    q, a = random.choice(QUESTIONS)
+    context.user_data["answer"] = a
+    context.user_data["question"] = q
 
-    # Send image
     await update.message.reply_photo(
-        photo=SECURITY_IMG_URL,
-        caption=welcome,
+        photo=SECURITY_IMG,
+        caption=f"Security Check\nHello *{user.first_name}*! Prove you're human:\n\n*What is {q}?*",
         parse_mode="Markdown"
     )
-
-    # Pick random math question
-    question, answer = random.choice(MATH_QUESTIONS)
-    context.user_data["math_answer"] = answer
-    context.user_data["math_question"] = question
 
     keyboard = [
-        [InlineKeyboardButton(str(i), callback_data=f"math_{i}") for i in range(1, 5)],
-        [InlineKeyboardButton(str(i), callback_data=f"math_{i}") for i in range(5, 9)],
-        [InlineKeyboardButton("🔟", callback_data="math_10")]
+        [InlineKeyboardButton(str(i), callback_data=f"ans_{i}") for i in range(1, 6)],
+        [InlineKeyboardButton(str(i), callback_data=f"ans_{i}") for i in range(6, 11)]
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
     await update.message.reply_text(
-        f"❓ *Quick Math*: What is `{question}`?\n"
-        "Tap the correct answer below 👇",
-        reply_markup=reply_markup,
-        parse_mode="Markdown"
+        "Tap the correct answer:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle all button presses"""
+# BUTTONS
+async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-
     data = query.data
 
-    # ── Math Challenge ──
-    if data.startswith("math_"):
+    if data.startswith("ans_"):
         choice = data.split("_")[1]
-        correct = context.user_data.get("math_answer")
+        correct = context.user_data.get("answer")
 
         if choice == correct:
-            await query.edit_message_caption(
-                caption="✅ **Correct!** You passed the security check.\n"
-                        "Use /menu to explore the bot!",
-                parse_mode="Markdown"
-            )
             context.user_data["verified"] = True
-        else:
             await query.edit_message_caption(
-                caption="❌ **Wrong!** Try again with /start",
+                caption="Correct! Welcome.\nUse /menu",
                 parse_mode="Markdown"
             )
-            context.user_data.clear()
+        else:
+            await query.edit_message_caption(caption="Wrong! /start again", parse_mode="Markdown")
         return
 
-    # ── Main Menu ──
     if data == "menu":
         keyboard = [
-            [InlineKeyboardButton("📊 Stats", callback_data="stats")],
-            [InlineKeyboardButton("🎲 Random Fact", callback_data="fact")],
-            [InlineKeyboardButton("⚙️ Settings", callback_data="settings")],
-            [InlineKeyboardButton("🔙 Back", callback_data="back_to_menu")]
+            [InlineKeyboardButton("Stats", callback_data="stats")],
+            [InlineKeyboardButton("Fact", callback_data="fact")],
+            [InlineKeyboardButton("Settings", callback_data="settings")]
         ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(
-            "🚀 **Main Menu** – Choose an option:",
-            reply_markup=reply_markup,
+            "Main Menu:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode="Markdown"
         )
-        return
 
-    # ── Example Actions ──
-    if data == "stats":
-        await query.edit_message_text("⏳ Loading stats…")
-        await send_loading(update, context, "📈 **Bot Stats**\n• Users: 1,337\n• Uptime: 24d")
+    elif data == "stats":
+        await query.edit_message_text("Loading stats…")
+        await show_loading(query.message, "Bot Stats\n• Users: 1,337\n• Uptime: 24d")
+
     elif data == "fact":
-        await query.edit_message_text("⏳ Fetching a cool fact…")
-        facts = [
-            "Octopuses have three hearts ❤️❤️❤️",
-            "A day on Venus is longer than a year on Venus 🌍",
-            "Honey never spoils 🍯"
-        ]
-        await send_loading(update, context, f"🎲 **Random Fact**\n{random.choice(facts)}")
+        facts = ["Octopuses have 3 hearts", "Honey never spoils", "Venus day > Venus year"]
+        await show_loading(query.message, f"Random Fact\n{random.choice(facts)}")
+
     elif data == "settings":
-        await query.edit_message_text("⚙️ Settings coming soon…")
+        await query.edit_message_text("Settings (soon)")
 
-async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show main menu if user is verified"""
+# /menu
+async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get("verified"):
-        await update.message.reply_text("🔒 Please complete /start first!")
+        await update.message.reply_text("Complete /start first!")
         return
+    await button(update, context)  # reuse menu logic
 
-    keyboard = [
-        [InlineKeyboardButton("📊 Stats", callback_data="stats")],
-        [InlineKeyboardButton("🎲 Random Fact", callback_data="fact")],
-        [InlineKeyboardButton("⚙️ Settings", callback_data="settings")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(
-        "🚀 **Main Menu** – Choose an option:",
-        reply_markup=reply_markup,
-        parse_mode="Markdown"
-    )
-
-# ── MAIN ───────────────────────────────────────────────────────────────────────
+# MAIN
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
-
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("menu", menu_command))
-    app.add_handler(CallbackQueryHandler(button_handler))
-
-    print("🤖 Bot is running...")
+    app.add_handler(CommandHandler("menu", menu))
+    app.add_handler(CallbackQueryHandler(button))
+    print("Bot is running...")
     app.run_polling()
 
 if __name__ == "__main__":
