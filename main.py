@@ -1,118 +1,172 @@
 import os
 import asyncio
 import random
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from aiogram import Bot, Dispatcher, F
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
 from dotenv import load_dotenv
 
-# Load env (local only)
+# Load .env (local dev only)
 load_dotenv()
 
-# CONFIG
+# ── CONFIG ─────────────────────────────────────────────────────────────────────
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not BOT_TOKEN:
-    raise RuntimeError("TELEGRAM_BOT_TOKEN not set in Render!")
+    raise RuntimeError("Set TELEGRAM_BOT_TOKEN in Render environment variables!")
 
-SECURITY_IMG = "https://i.ibb.co/r2LkRhCY/Security.jpg"
-QUESTIONS = [
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher(storage=MemoryStorage())
+
+SECURITY_IMG_URL = "https://i.ibb.co/r2LkRhCY/Security.jpg"
+MATH_QUESTIONS = [
     ("3 + 5", "8"),
     ("7 - 2", "5"),
     ("4 × 6", "24"),
     ("9 ÷ 3", "3"),
+    ("2 + 10", "12"),
 ]
 
-# LOADING BAR
-def loading(percent: int) -> str:
-    bar = "█" * (percent // 10) + "░" * (10 - percent // 10)
+# ── STATES ─────────────────────────────────────────────────────────────────────
+class MathState(StatesGroup):
+    waiting_answer = State()
+
+# ── HELPERS ───────────────────────────────────────────────────────────────────
+def loading_bar(percent: int) -> str:
+    """Cool animated loading bar"""
+    bar_len = 12
+    filled = int(bar_len * percent // 100)
+    bar = "█" * filled + "░" * (bar_len - filled)
     return f"`{bar} {percent}%`\n*Processing…*"
 
-async def show_loading(message, final_text: str):
-    msg = await message.reply_text(loading(0), parse_mode="Markdown")
-    for p in range(20, 101, 20):
-        await asyncio.sleep(0.4)
-        await msg.edit_text(loading(p), parse_mode="Markdown")
-    await msg.edit_text(final_text, parse_mode="Markdown")
+async def send_loading(message: Message, final_text: str):
+    """Show progressive loading then final message"""
+    msg = await message.answer(loading_bar(0), parse_mode="MarkdownV2")
+    for p in range(10, 101, 15):
+        await asyncio.sleep(0.35)
+        await msg.edit_text(loading_bar(p), parse_mode="MarkdownV2")
+    await msg.edit_text(final_text, parse_mode="MarkdownV2")
 
-# /start
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    q, a = random.choice(QUESTIONS)
-    context.user_data["answer"] = a
-    context.user_data["question"] = q
-
-    await update.message.reply_photo(
-        photo=SECURITY_IMG,
-        caption=f"Security Check\nHello *{user.first_name}*! Prove you're human:\n\n*What is {q}?*",
-        parse_mode="Markdown"
+# ── HANDLERS ───────────────────────────────────────────────────────────────────
+@dp.message(Command("start"))
+async def start(message: Message, state: FSMContext):
+    """Welcome + security image + math challenge"""
+    user = message.from_user
+    welcome = (
+        "🔐 <b>Security Check</b>\n"
+        f"Hello <i>{user.first_name}</i>! Before we start, prove you’re not a robot 🤖\n\n"
     )
+
+    # Send image
+    await message.answer_photo(
+        photo=SECURITY_IMG_URL,
+        caption=welcome,
+        parse_mode="MarkdownV2"
+    )
+
+    # Pick random math question
+    question, answer = random.choice(MATH_QUESTIONS)
+    await state.set_data({"math_answer": answer, "math_question": question})
+    await state.set_state(MathState.waiting_answer)
+
+    # Buttons (escape for MarkdownV2)
+    keyboard = [
+        [InlineKeyboardButton(str(i), callback_data=f"math_{i}") for i in range(1, 5)],
+        [InlineKeyboardButton(str(i), callback_data=f"math_{i}") for i in range(5, 9)],
+        [InlineKeyboardButton("🔟", callback_data="math_10")]
+    ]
+    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+    await message.answer(
+        f"❓ <b>Quick Math</b>: What is `{question.replace('+', '\\+').replace('×', '\\×').replace('÷', '\\÷')}`?\n"
+        "Tap the correct answer below 👇",
+        reply_markup=reply_markup,
+        parse_mode="MarkdownV2"
+    )
+
+@dp.callback_query(F.data.startswith("math_"))
+async def math_answer(callback: CallbackQuery, state: FSMContext):
+    """Handle math answer"""
+    await callback.answer()
+    choice = callback.data.split("_")[1]
+    data = await state.get_data()
+    correct = data.get("math_answer")
+
+    if choice == correct:
+        await state.clear()
+        await callback.message.edit_text(
+            "✅ <b>Correct!</b> You passed the security check.\n"
+            "Use /menu to explore the bot!",
+            parse_mode="MarkdownV2"
+        )
+        await state.update_data(verified=True)
+    else:
+        await callback.message.edit_text(
+            "❌ <b>Wrong!</b> Try again with /start",
+            parse_mode="MarkdownV2"
+        )
+
+@dp.message(Command("menu"))
+async def menu(message: Message, state: FSMContext):
+    """Show main menu if verified"""
+    data = await state.get_data()
+    if not data.get("verified"):
+        await message.answer("🔒 Please complete /start first!")
+        return
 
     keyboard = [
-        [InlineKeyboardButton(str(i), callback_data=f"ans_{i}") for i in range(1, 6)],
-        [InlineKeyboardButton(str(i), callback_data=f"ans_{i}") for i in range(6, 11)]
+        [InlineKeyboardButton("📊 Stats", callback_data="stats")],
+        [InlineKeyboardButton("🎲 Random Fact", callback_data="fact")],
+        [InlineKeyboardButton("⚙️ Settings", callback_data="settings")]
     ]
-    await update.message.reply_text(
-        "Tap the correct answer:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    await message.answer(
+        "🚀 <b>Main Menu</b> – Choose an option:",
+        reply_markup=reply_markup,
+        parse_mode="MarkdownV2"
     )
 
-# BUTTONS
-async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-
-    if data.startswith("ans_"):
-        choice = data.split("_")[1]
-        correct = context.user_data.get("answer")
-
-        if choice == correct:
-            context.user_data["verified"] = True
-            await query.edit_message_caption(
-                caption="Correct! Welcome.\nUse /menu",
-                parse_mode="Markdown"
-            )
-        else:
-            await query.edit_message_caption(caption="Wrong! /start again", parse_mode="Markdown")
-        return
+@dp.callback_query(F.data.in_(["stats", "fact", "settings", "menu"]))
+async def button_handler(callback: CallbackQuery, state: FSMContext):
+    """Handle menu buttons"""
+    await callback.answer()
+    data = callback.data
 
     if data == "menu":
         keyboard = [
-            [InlineKeyboardButton("Stats", callback_data="stats")],
-            [InlineKeyboardButton("Fact", callback_data="fact")],
-            [InlineKeyboardButton("Settings", callback_data="settings")]
+            [InlineKeyboardButton("📊 Stats", callback_data="stats")],
+            [InlineKeyboardButton("🎲 Random Fact", callback_data="fact")],
+            [InlineKeyboardButton("⚙️ Settings", callback_data="settings")]
         ]
-        await query.edit_message_text(
-            "Main Menu:",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="Markdown"
+        reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+        await callback.message.edit_text(
+            "🚀 <b>Main Menu</b> – Choose an option:",
+            reply_markup=reply_markup,
+            parse_mode="MarkdownV2"
         )
-
-    elif data == "stats":
-        await query.edit_message_text("Loading stats…")
-        await show_loading(query.message, "Bot Stats\n• Users: 1,337\n• Uptime: 24d")
-
-    elif data == "fact":
-        facts = ["Octopuses have 3 hearts", "Honey never spoils", "Venus day > Venus year"]
-        await show_loading(query.message, f"Random Fact\n{random.choice(facts)}")
-
-    elif data == "settings":
-        await query.edit_message_text("Settings (soon)")
-
-# /menu
-async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get("verified"):
-        await update.message.reply_text("Complete /start first!")
         return
-    await button(update, context)  # reuse menu logic
 
-# MAIN
-def main():
-    app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("menu", menu))
-    app.add_handler(CallbackQueryHandler(button))
-    print("Bot is running...")
-    app.run_polling()
+    # Example Actions with Loading
+    if data == "stats":
+        await callback.message.edit_text("⏳ Loading stats…")
+        await send_loading(callback.message, "📈 <b>Bot Stats</b>\n• Users: 1,337\n• Uptime: 24d")
+    elif data == "fact":
+        await callback.message.edit_text("⏳ Fetching a cool fact…")
+        facts = [
+            "Octopuses have three hearts ❤️❤️❤️",
+            "A day on Venus is longer than a year on Venus 🌍",
+            "Honey never spoils 🍯"
+        ]
+        await send_loading(callback.message, f"🎲 <b>Random Fact</b>\n{random.choice(facts)}")
+    elif data == "settings":
+        await callback.message.edit_text("⚙️ Settings coming soon…")
+
+# ── MAIN ───────────────────────────────────────────────────────────────────────
+async def main():
+    print("🤖 Bot is running...")
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
